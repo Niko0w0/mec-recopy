@@ -134,7 +134,6 @@ class Double_DQN:
             q = q_eval
 
             q_eval = agent_eval(obs_n).gather(-1, actions_index)
-            # q_eval = torch.gather(q_eval, dim=1, index=torch.unsqueeze(action_cur, 1))
             q_next = agent_target(obs_n_).detach()
 
             for i in range(obs_n.shape[0]):

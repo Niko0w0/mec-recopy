@@ -1,158 +1,161 @@
+import numpy as np
 import torch
 import torch.nn as nn
-import time
-import os
+import copy
 import matplotlib.pyplot as plt
-import numpy as np
+
+from replay_buffer import ReplayBuffer
+from env import ENV
+from torch.utils.tensorboard import SummaryWriter
 import json
-
-from Rl_net import actor, critic
-
-learning_start_step = 200
-learning_fre = 5
-batch_size = 64
-gamma = 0.9
-lr = 0.01
-max_grad_norm = 0.5
-save_model = 40
-save_dir = "models/simple_adversary/ddpg"
-save_fer = 400
-tao = 0.01
 file_path = "res/ddpg_td_errors.json"
 
-class DDPG(object):
-    def __init__(self, env):
-        self.env = env
-    
-    def get_train(self, env, obs_shape_n, action_shape_n):
-        
-        actors_cur = None
-        critics_cur = None
-        actors_target = None
-        critics_target = None
-        optimizer_a = None
-        optimizer_c = None
+class Network(nn.Module):
 
-        actors_cur = actor(obs_shape_n, action_shape_n)
-        critics_cur = critic(obs_shape_n, action_shape_n)
-        actors_target = actor(obs_shape_n, action_shape_n)
-        critics_target = critic(obs_shape_n, action_shape_n)
-        optimizer_a = torch.optim.Adam(actors_cur.parameters(), lr = lr)
-        optimizer_c = torch.optim.Adam(critics_cur.parameters(), lr = lr)
-        actors_tar = self.update_train(actors_cur, actors_target, 1.0)
-        critics_tar = self.update_train(critics_cur, critics_target, 1.0)
-        return actors_cur, critics_cur, actors_tar, critics_tar, optimizer_a, optimizer_c
+    def __init__(self, n_features, n_actions):
+        super().__init__()
+        self.fc1 = nn.Linear(n_features, 16)
+        self.fc1.weight.data.normal_(0, 0.3)
+        self.fc1.bias.data.normal_(0.1)
+        self.relu = nn.ReLU()
+        self.fc2 = nn.Linear(16, 32)
+        self.fc2.weight.data.normal_(0, 0.3)
+        self.fc2.bias.data.normal_(0.1)
+        self.fc3 = nn.Linear(32, 64)
+        self.fc3.weight.data.normal_(0, 0.3)
+        self.fc3.bias.data.normal_(0.1)
+        self.out = nn.Linear(64, n_actions)
+        self.out.weight.data.normal_(0, 0.3)
+        self.out.bias.data.normal_(0.1)
 
-    def update_train(self, agents_cur, agents_tar, tao):
-        """
-        用于更新target网络，
-        这个方法不同于直接复制，但结果一样
-        out:
-        |agents_tar: the agents with new par updated towards agents_current
-        agents_cur: 当前智能体的策略网络列表（或者价值网络列表）。
-        agents_tar: 目标智能体的策略网络列表（或者价值网络列表）。
-        """
-        key_list = list(agents_cur.state_dict().keys())
-        state_dict_t = agents_tar.state_dict()
-        state_dict_c = agents_cur.state_dict()
-        for key in key_list:
-            state_dict_t[key] = state_dict_c[key] * tao + \
-                                (1 - tao) * state_dict_t[key]
-        agents_tar.load_state_dict(state_dict_t)
-        return agents_tar
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.relu(x)
+        x = self.fc2(x)
+        x = self.relu(x)
+        x = self.fc3(x)
+        x = self.relu(x)
+        return self.out(x)
 
-    def agents_train(self, game_step, update_cnt, memory, obs_size, action_size,
-                     actors_cur, actors_tar, critics_cur, critics_tar, optimizers_a, optimizers_c, write):
-        """
-        par:
-        |input: the data for training
-        |output: the data for next update
-        """
-        # 训练
-        if (game_step > learning_start_step) and (game_step % learning_fre == 0):
-            if update_cnt == 0: print('\r=start training...' + ''*100)
-            update_cnt += 1
+class DDPG:
+    def __init__(self,
+                 env,
+                 learning_rate=0.01,
+                 reward_decay=0.9,
+                 e_greedy=0.9,
+                 replace_target_iter=300,
+                 memory_size=500,
+                 batch_size=5,
+                 e_greedy_increment=0.001,
+                 epoch=100
+                 ):
+        self.UEs = env.UEs
+        self.n_actions = env.n_actions
+        self.n_features = env.n_features
+        self.actions = env.actions
+        self.k = env.k
+        self.learning_rate = learning_rate
+        self.gama = reward_decay
+        self.epsilon_max = e_greedy
+        self.replace_target_iter = replace_target_iter
+        self.memory_size = memory_size
+        self.batch_size = batch_size
+        self.epsilon_increment = e_greedy_increment
+        self.epoch = epoch
 
+        self.epsilon = 0
+        self.learn_step_counter = 0
+
+        # 初始化replay
+        self.memory = ReplayBuffer(self.memory_size)
+
+        self.cost_his = []
+
+        self.eval_net = [None for _ in range(self.UEs)]
+        self.target_net = [None for _ in range(self.UEs)]
+        self.optimizer = [None for _ in range(self.UEs)]
+
+        for i in range(self.UEs):
+
+            self.eval_net[i], self.target_net[i] = Network(self.n_features , self.n_actions), Network(self.n_features,
+                                                                                           self.n_actions)
+            self.optimizer[i] = torch.optim.Adam(self.eval_net[i].parameters(), lr=learning_rate)
+
+        self.loss_fun = nn.MSELoss()
+
+    def store_memory(self, s, a, r, s_):
+        self.memory.add(s, a, r, s_)
+
+    def choose_action(self, observation):
+        a = []
+        for i in range(self.UEs):
+            obs = np.array(observation[i]).reshape(1, self.n_features)
+            obs = torch.FloatTensor(obs[:])   # 增加一个维度 i.e[1,2,3,4,5]变成[[1,2,3,4,5]]
+            if np.random.uniform() < self.epsilon:
+                # 选择q值最大的动作
+                actions_value = self.eval_net[i](obs)
+                index = torch.max(actions_value, 1)[1].data.numpy()
+                index = index[0]
+                action = self.actions[index]
+            else:
+                index = np.random.randint(0, self.n_actions)
+                action = self.actions[index]
+            a.append(action)
+        return a
+
+    def learn(self, step, write):
+        if self.learn_step_counter % self.replace_target_iter == 0:
+            for i in range(self.UEs):
+                self.target_net[i].load_state_dict(self.eval_net[i].state_dict())  # 直接赋值更新权重
+        self.learn_step_counter += 1
+
+        for agent_idx, (agent_eval, agent_target, opt) in \
+            enumerate(zip(self.eval_net, self.target_net, self.optimizer)):
             # 随机抽样
-            rew = []
-            agent_idx = 1
-            obs, action, reward, obs_, weights, idxes = memory.sample(batch_size, agent_idx, beta=0.4)
-            # print(obs, action, reward, obs_, weights, idxes)
+            obs, action, reward, obs_, weights, idxes = self.memory.sample(self.batch_size, agent_idx)
             
-            for i in range(batch_size):
-                r = reward[i]
-                # print('****************')
-                # print("r:", r)
-                # print("type(r):", type(r))
-                # print('****************')
-                ar = sum(r)/len(r)
-                rew.append(ar)
+            actions_index = []
 
-            # update critic
-            # rew = torch.tensor(reward, dtype=torch.float)
-            rew = torch.tensor(rew, dtype=torch.float)
+            rew = torch.tensor(reward, dtype=torch.float)
             action_cur = torch.from_numpy(action).to(torch.float)
+            for i in range(self.batch_size):
+                for j in range(self.UEs):
+                    a = action_cur[i][j]
+                    action_index = a[0] * self.k + a[1] / (1 / (self.k - 1))
+                    actions_index.append(int(action_index))
+            actions_index = torch.tensor(actions_index).reshape(self.batch_size, self.UEs, 1)
             obs_n = torch.from_numpy(obs).to(torch.float)
             obs_n_ = torch.from_numpy(obs_).to(torch.float)
-            # actors_tar = [actor(num_input, action_size) for _ in range(num_actors)]
-            # action_tar = torch.cat([a_t(obs_n_[:, obs_size[idx][0]:obs_size[idx][1]]).detach() \
-            #                         for idx, a_t in enumerate(actors_tar)], dim=1)
-            action_tar = actors_tar(obs_n_[:, obs_size[0][0]:obs_size[0][1]]).detach()
-            
-            q = critics_cur(obs_n, action_cur).reshape(-1)     # q
-            q_ = critics_tar(obs_n_, action_tar).reshape(-1)   # q_
-            tar_value = q_ * gamma + rew
-            loss_c = torch.nn.MSELoss()(q, tar_value)
-            optimizers_c.zero_grad()
-            loss_c.backward()
-            nn.utils.clip_grad_norm_(critics_cur.parameters(), max_grad_norm)
-            optimizers_c.step()
+            obs_n = obs_n.reshape(self.batch_size, self.UEs, self.n_features)
+            obs_n_ = obs_n_.reshape(self.batch_size, self.UEs, self.n_features)
 
-            # update Actor
-            # There is no need to cal other agent's action
-            model_out, policy_c_new = actors_cur(
-                obs_n_[:, obs_size[agent_idx][0]:obs_size[agent_idx][1]], model_original_out=True)
-            # update the action of this agent
-            action_cur[:, action_size[agent_idx][0]:action_size[agent_idx][1]] = policy_c_new
-            loss_pse = torch.mean(torch.pow(model_out, 2))
-            loss_a = torch.mul(-1, torch.mean(critics_cur(obs_n, action_cur)))
+            q_target = torch.zeros((self.batch_size, self.UEs, 1))
+            q_eval = agent_eval(obs_n)
+            q = q_eval
 
-            optimizers_a.zero_grad()
-            loss_t = 1e-3 * loss_pse + loss_a
-            loss_t.backward()
-            nn.utils.clip_grad_norm_(actors_cur.parameters(), max_grad_norm)
-            optimizers_a.step()
+            q_eval = agent_eval(obs_n).gather(-1, actions_index)
+            q_next = agent_target(obs_n_).detach()
+
+            for i in range(obs_n.shape[0]):
+                for j in range(self.UEs):
+                    action = torch.argmax(q[i][j], 0).detach()
+                    q_target[i][j] = rew[i][j] + self.gama * q_next[i, j, action]
+
+            loss = self.loss_fun(q_eval, q_target)
+            write.add_scalar("Loss/DDPG", loss, step)
+            self.cost_his.append(loss)
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
             
-            td_errors = []
-            td_errors = tar_value - q
-            # priorities = np.abs(td_errors)
-            priorities = np.abs(td_errors.detach().numpy())
+            self.epsilon = self.epsilon + self.epsilon_increment if self.epsilon < self.epsilon_max else self.epsilon_max
+            
+            # 更新优先级
+            td_errors = q_target.view(-1)
+            self.memory.update_priorities(idxes, td_errors)
+            
+            
             
             with open(file_path, "a") as file:
                 json.dump(td_errors.tolist(), file)
                 file.write("\n")  # 写入换行符，以便每次更新都在文件最末添加数据
-            
-            memory.update_priorities(idxes, priorities)
-            
-            write.add_scalar("Loss/ddpg/Actor", loss_t, game_step)
-            write.add_scalar("Loss/ddpg/Critic", loss_c, game_step)
-                
-            # save model
-            if update_cnt > save_model and update_cnt % save_fer == 0:
-                time_now = time.strftime('%y%m_%d%H%M')
-                print('=time:{} step:{}        save'.format(time_now, game_step))
-                model_file_dir = os.path.join(save_dir, '{}_{}'.format(time_now, game_step))
-                if not os.path.exists(model_file_dir):  # make the path
-                    os.makedirs(model_file_dir)
-                
-                torch.save(actors_cur, os.path.join(model_file_dir, 'a_c.pt'))
-                torch.save(actors_tar, os.path.join(model_file_dir, 'a_t.pt'))
-                torch.save(critics_cur, os.path.join(model_file_dir, 'c_c.pt'))
-                torch.save(critics_tar, os.path.join(model_file_dir, 'c_t.pt'))
-
-            # update the tar par
-            actors_tar = self.update_train(actors_cur, actors_tar, tao)
-            critics_tar = self.update_train(critics_cur, critics_tar, tao)
-            
-            
-        return update_cnt, actors_cur, actors_tar, critics_cur, critics_tar

@@ -21,11 +21,16 @@ class critic(abstract_agent):
         self.linear_c = nn.Linear(64, 1)
 
     def reset_parameters(self):
-        nn.init.xavier_uniform(self.linear_c1.weight, gain=nn.init.calculate_gain('leak_relu')) # 均匀分布
-        nn.init.xavier_uniform(self.linear_c2.weight, gain=nn.init.calculate_gain('leak_relu')) # 均匀分布
-        nn.init.xavier_uniform(self.linear_c.weight, gain=nn.init.calculate_gain('leak_relu')) # 均匀分布
+        # nn.init.xavier_uniform(self.linear_c1.weight, gain=nn.init.calculate_gain('leak_relu')) # 均匀分布
+        # nn.init.xavier_uniform(self.linear_c2.weight, gain=nn.init.calculate_gain('leak_relu')) # 均匀分布
+        # nn.init.xavier_uniform(self.linear_c.weight, gain=nn.init.calculate_gain('leak_relu')) # 均匀分布
+        
+        nn.init.xavier_uniform_(self.linear_c1.weight, gain=nn.init.calculate_gain('leaky_relu'))
+        nn.init.xavier_uniform_(self.linear_c2.weight, gain=nn.init.calculate_gain('leaky_relu'))
+        nn.init.xavier_uniform_(self.linear_c.weight, gain=nn.init.calculate_gain('leaky_relu'))
 
     def forward(self, obs_input, act_input):
+        # print(self, obs_input.shape, act_input.shape)
         x_cat = self.LRelu(self.linear_c1(torch.cat([obs_input, act_input], dim=1)))
         x = self.LRelu(self.linear_c2(x_cat))
         x = self.linear_c(x)
@@ -43,9 +48,13 @@ class actor(abstract_agent):
         self.linear_a = nn.Linear(64, action_size)
 
     def reset_parameters(self):
-        nn.init.xavier_uniform(self.linear_c1.weight, gain=nn.init.calculate_gain('leak_relu')) # 均匀分布
-        nn.init.xavier_uniform(self.linear_c2.weight, gain=nn.init.calculate_gain('leak_relu')) # 均匀分布
-        nn.init.xavier_uniform(self.linear_c.weight, gain=nn.init.calculate_gain('leak_relu')) # 均匀分布
+        # nn.init.xavier_uniform(self.linear_c1.weight, gain=nn.init.calculate_gain('leak_relu')) # 均匀分布
+        # nn.init.xavier_uniform(self.linear_c2.weight, gain=nn.init.calculate_gain('leak_relu')) # 均匀分布
+        # nn.init.xavier_uniform(self.linear_c.weight, gain=nn.init.calculate_gain('leak_relu')) # 均匀分布
+        
+        nn.init.xavier_uniform_(self.linear_c1.weight, gain=nn.init.calculate_gain('leaky_relu'))
+        nn.init.xavier_uniform_(self.linear_c2.weight, gain=nn.init.calculate_gain('leaky_relu'))
+        nn.init.xavier_uniform_(self.linear_c.weight, gain=nn.init.calculate_gain('leaky_relu'))
 
     def forward(self, x, model_original_out=False):
         # print("x")

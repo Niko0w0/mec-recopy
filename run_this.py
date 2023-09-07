@@ -25,11 +25,11 @@ save_dir = "models/simple_adversary"
 save_fer = 400
 tao = 0.01
 memory_size = 2000
-EPOCH = 100
+EPOCH = 50000
 STEP = 200
 
 write = SummaryWriter(log_dir="logs")
-seed = 77378925
+seed = 73247287
 np.random.seed(seed)
 
 def train(ue = 3, mec = 7, k = 11 * 3, lam = 0.5):
@@ -295,16 +295,29 @@ def train(ue = 3, mec = 7, k = 11 * 3, lam = 0.5):
     epoch_average_reward = np.array(epoch_average_reward, dtype=float)
     
     # "MADDPG", "DQN", "D3QN", "Local", "Mec", "random"
-    data = []
-    data.append(epoch_average_total_cost)
-    data.append(epoch_average_dqn)
-    data.append(epoch_average_d3qn)
-    data.append(epoch_average_local)
-    data.append(epoch_average_mec)
-    data.append(epoch_average_ran)
-    data.append(epoch_average_reward)
+    data_ = []
+    data_.append(epoch_average_total_cost)
+    data_.append(epoch_average_dqn)
+    data_.append(epoch_average_d3qn)
+    data_.append(epoch_average_local)
+    data_.append(epoch_average_mec)
+    data_.append(epoch_average_ran)
+    data_.append(epoch_average_reward)
     
-    data = smooth(data, 80) # 平滑处理
+    data_ = smooth(data_, 80) # 平滑处理
+    
+    data = {
+        'Training Steps': range(0, EPOCH),  # 使用之前生成的 x 轴坐标
+        'MADDPG Cost': data_[0],
+        'DQN Cost': data_[1],
+        'D3QN Cost': data_[2],
+        'Local Cost': data_[3],
+        'Mec Cost': data_[4],
+        'Random Cost': data_[5],
+        'Reward': data_[6]
+    }
+    
+    
     df = pd.DataFrame(data)
     df.to_csv('res/cost_total.csv', index=False)  # 将数据保存到名为 'your_data.csv' 的文件中
     
@@ -337,7 +350,7 @@ def train(ue = 3, mec = 7, k = 11 * 3, lam = 0.5):
     plt.figure(figsize=(20, 12))  # 设置图表大小
 
     # 使用 Seaborn 画折线图
-    sns.lineplot(data=df, x='Training Steps', y='reward', label='reward')
+    sns.lineplot(data=df, x='Training Steps', y='Reward', label='Reward')
 
     # 添加标题和标签
     plt.title('Reward')

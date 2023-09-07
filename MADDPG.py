@@ -161,9 +161,4 @@ class Maddpg(object):
             actors_tar = self.update_train(actors_cur, actors_tar, tao)
             critics_tar = self.update_train(critics_cur, critics_tar, tao)
             
-            
         return update_cnt, actors_cur, actors_tar, critics_cur, critics_tar
-
-
-
-
